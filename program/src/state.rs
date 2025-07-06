@@ -1015,6 +1015,50 @@ impl GetSwapBaseOutData {
     }
 }
 
+/// Sequencer order list account
+#[cfg_attr(feature = "client", derive(Debug))]
+#[repr(C, packed)]
+#[derive(Clone, Copy, Default, PartialEq)]
+pub struct SequencerOrders {
+    /// Hash of the submitted order list
+    pub orders_hash: [u8; 32],
+    /// Next order index expected to be executed
+    pub next_index: u64,
+}
+impl_loadable!(SequencerOrders);
+
+impl SequencerOrders {
+    #[inline]
+    pub fn load_mut_checked<'a>(
+        account: &'a AccountInfo,
+        program_id: &Pubkey,
+    ) -> Result<RefMut<'a, Self>, ProgramError> {
+        if account.owner != program_id {
+            return Err(AmmError::InvalidOwner.into());
+        }
+        if account.data_len() != size_of::<Self>() {
+            return Err(AmmError::ExpectedAccount.into());
+        }
+        let data = Self::load_mut(account)?;
+        Ok(data)
+    }
+
+    #[inline]
+    pub fn load_checked<'a>(
+        account: &'a AccountInfo,
+        program_id: &Pubkey,
+    ) -> Result<Ref<'a, Self>, ProgramError> {
+        if account.owner != program_id {
+            return Err(AmmError::InvalidOwner.into());
+        }
+        if account.data_len() != size_of::<Self>() {
+            return Err(AmmError::ExpectedAccount.into());
+        }
+        let data = Self::load(account)?;
+        Ok(data)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
