@@ -208,6 +208,9 @@ pub enum AmmError {
     /// Init lp amount is too less.
     #[error("Init lp amount is too less(Because 10**lp_decimals amount lp will be locked)")]
     InitLpAmountTooLess,
+    /// Provided swap parameters hash is not valid
+    #[error("Invalid sequencer order hash")]
+    InvalidOrderHash,
     /// Unknown Amm Error
     #[error("Unknown Amm Error")]
     UnknownAmmError,
@@ -303,6 +306,7 @@ impl PrintProgramError for AmmError {
             AmmError::RepeatCreateConfigAccount => msg!("Error: RepeatCreateConfigAccount"),
             AmmError::MarketLotSizeIsTooLarge => msg!("Error: Market lotSize is too large"),
             AmmError::InitLpAmountTooLess => msg!("Error: Init lp amount is too less(Because 10**lp_decimals amount lp will be locked)"),
+            AmmError::InvalidOrderHash => msg!("Error: Invalid sequencer order hash"),
             AmmError::UnknownAmmError => msg!("Error: UnknownAmmError"),
         }
     }

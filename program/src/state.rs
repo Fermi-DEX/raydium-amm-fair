@@ -22,6 +22,7 @@ use std::{
 
 pub const TEN_THOUSAND: u64 = 10000;
 pub const MAX_ORDER_LIMIT: usize = 10;
+pub const SEQUENCER_ORDER_LIMIT: usize = 32;
 
 #[cfg(not(test))]
 pub fn get_recent_epoch() -> Result<u64, ProgramError> {
@@ -64,6 +65,28 @@ macro_rules! impl_loadable {
         unsafe impl TriviallyTransmutable for $type_name {}
         impl Loadable for $type_name {}
     };
+}
+
+#[cfg_attr(feature = "client", derive(Debug))]
+#[repr(C, packed)]
+#[derive(Clone, Copy, Default)]
+pub struct SequencerOrders {
+    pub next_index: u64,
+    pub merkle_root: [u8; 32],
+    pub hashes: [[u8; 32]; SEQUENCER_ORDER_LIMIT],
+}
+impl_loadable!(SequencerOrders);
+
+impl SequencerOrders {
+    pub fn verify_order(&self, idx: usize, hash: &[u8; 32]) -> bool {
+        if self.merkle_root != [0u8; 32] {
+            false
+        } else if idx < SEQUENCER_ORDER_LIMIT {
+            self.hashes[idx] == *hash
+        } else {
+            false
+        }
+    }
 }
 #[cfg_attr(feature = "client", derive(Debug))]
 #[repr(C, packed)]
@@ -1539,5 +1562,18 @@ mod test {
         }
         let unpack_free_slot_bits = unpack_data.free_slot_bits;
         assert_eq!(free_slot_bits, unpack_free_slot_bits);
+    }
+
+    #[test]
+    fn test_sequencer_order_verify() {
+        let mut orders = SequencerOrders::default();
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1u64.to_le_bytes());
+        buf.extend_from_slice(&2u64.to_le_bytes());
+        let h = solana_program::hash::hash(&buf);
+        orders.hashes[0] = h.to_bytes();
+        assert!(orders.verify_order(0, &h.to_bytes()));
+        let fake = [0u8; 32];
+        assert!(!orders.verify_order(0, &fake));
     }
 }

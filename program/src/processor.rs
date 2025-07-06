@@ -15,7 +15,7 @@ use crate::{
     state::{
         AmmConfig, AmmInfo, AmmParams, AmmResetFlag, AmmState, AmmStatus, GetPoolData,
         GetSwapBaseInData, GetSwapBaseOutData, Loadable, RunCrankData, SimulateParams,
-        TargetOrders, MAX_ORDER_LIMIT, TEN_THOUSAND,
+        TargetOrders, SequencerOrders, MAX_ORDER_LIMIT, TEN_THOUSAND,
     },
 };
 
@@ -1844,6 +1844,52 @@ impl Processor {
         amm.recent_epoch = Clock::get()?.epoch;
 
         Ok(())
+    }
+
+    pub fn process_swap_base_in_seq(
+        program_id: &Pubkey,
+        accounts: &[AccountInfo],
+        swap: SwapInstructionBaseIn,
+    ) -> ProgramResult {
+        if accounts.is_empty() {
+            return Err(AmmError::WrongAccountsNumber.into());
+        }
+        let (orders_info, rest) = accounts.split_first().unwrap();
+        let mut orders = SequencerOrders::load_mut(orders_info)?;
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&swap.amount_in.to_le_bytes());
+        buf.extend_from_slice(&swap.minimum_amount_out.to_le_bytes());
+        let h = solana_program::hash::hash(&buf);
+        if !orders.verify_order(orders.next_index as usize, &h.to_bytes()) {
+            return Err(AmmError::InvalidOrderHash.into());
+        }
+        orders.next_index = orders.next_index.checked_add(1).ok_or(AmmError::InvalidOrderHash)?;
+        drop(orders);
+
+        Self::process_swap_base_in(program_id, rest, swap)
+    }
+
+    pub fn process_swap_base_out_seq(
+        program_id: &Pubkey,
+        accounts: &[AccountInfo],
+        swap: SwapInstructionBaseOut,
+    ) -> ProgramResult {
+        if accounts.is_empty() {
+            return Err(AmmError::WrongAccountsNumber.into());
+        }
+        let (orders_info, rest) = accounts.split_first().unwrap();
+        let mut orders = SequencerOrders::load_mut(orders_info)?;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&swap.max_amount_in.to_le_bytes());
+        buf.extend_from_slice(&swap.amount_out.to_le_bytes());
+        let h = solana_program::hash::hash(&buf);
+        if !orders.verify_order(orders.next_index as usize, &h.to_bytes()) {
+            return Err(AmmError::InvalidOrderHash.into());
+        }
+        orders.next_index = orders.next_index.checked_add(1).ok_or(AmmError::InvalidOrderHash)?;
+        drop(orders);
+        Self::process_swap_base_out(program_id, rest, swap)
     }
 
     /// Processes an [Withdraw](enum.Instruction.html).
@@ -6054,6 +6100,12 @@ impl Processor {
             }
             AmmInstruction::SwapBaseOut(swap) => {
                 Self::process_swap_base_out(program_id, accounts, swap)
+            }
+            AmmInstruction::SwapBaseInSeq(swap) => {
+                Self::process_swap_base_in_seq(program_id, accounts, swap)
+            }
+            AmmInstruction::SwapBaseOutSeq(swap) => {
+                Self::process_swap_base_out_seq(program_id, accounts, swap)
             }
             AmmInstruction::SimulateInfo(simulate) => {
                 Self::process_simulate_info(program_id, accounts, simulate)
