@@ -122,6 +122,12 @@ pub struct AdminCancelOrdersInstruction {
     pub limit: u16,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ExecuteSwapsInstruction {
+    pub count: u64,
+}
+
 /// Update config acccount params
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -369,6 +375,9 @@ pub enum AmmInstruction {
 
     /// Update amm config account by admin
     UpdateConfigAccount(ConfigArgs),
+
+    /// Execute multiple queued swaps
+    ExecuteSwaps(ExecuteSwapsInstruction),
 }
 
 impl AmmInstruction {
@@ -595,6 +604,10 @@ impl AmmInstruction {
                         return Err(ProgramError::InvalidInstructionData.into());
                     }
                 }
+            }
+            16 => {
+                let (count, _rest) = Self::unpack_u64(rest)?;
+                Self::ExecuteSwaps(ExecuteSwapsInstruction { count })
             }
             _ => return Err(ProgramError::InvalidInstructionData.into()),
         })
@@ -836,6 +849,10 @@ impl AmmInstruction {
                     }
                     _ => return Err(ProgramError::InvalidInstructionData.into()),
                 }
+            }
+            Self::ExecuteSwaps(ExecuteSwapsInstruction { count }) => {
+                buf.push(16);
+                buf.extend_from_slice(&count.to_le_bytes());
             }
         }
         Ok(buf)
@@ -1750,4 +1767,20 @@ pub fn update_config_account(
         accounts,
         data,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pack_unpack_execute_swaps() {
+        let instruction = AmmInstruction::ExecuteSwaps(ExecuteSwapsInstruction { count: 3 });
+        let packed = instruction.pack().unwrap();
+        let unpacked = AmmInstruction::unpack(&packed).unwrap();
+        match unpacked {
+            AmmInstruction::ExecuteSwaps(inner) => assert_eq!(inner.count, 3),
+            _ => panic!("wrong instruction"),
+        }
+    }
 }

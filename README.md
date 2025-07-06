@@ -181,4 +181,15 @@ let instruction = amm_cli::process_amm_commands(subcmd, &config).unwrap();
 ### Note
 If the parameter of the user_output_token is None, it will be ATA token by default.
 
+6. execute multiple queued swaps
+```rust
+// build execute swaps instruction
+let subcmd = AmmCommands::ExecuteSwaps {
+    pool_id: Pubkey::from_str("The specified pool of trading").unwrap(),
+    swap_queue: Pubkey::from_str("The swap queue account").unwrap(),
+    count: 2u64,
+};
+let instruction = amm_cli::process_amm_commands(subcmd, &config).unwrap();
+```
+
 For more information, you can see the repo [raydium-library](https://github.com/raydium-io/raydium-library)
