@@ -913,6 +913,55 @@ pub struct LastOrderDistance {
     pub last_order_denominator: u64,
 }
 
+/// Maximum number of queued swaps stored in a [SwapQueue].
+pub const MAX_EXECUTE_SWAPS: usize = 16;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct QueuedSwap {
+    pub is_base_out: u8,
+    pub _padding: [u8; 7],
+    pub amount_param_a: u64,
+    pub amount_param_b: u64,
+    pub hash: [u8; 32],
+}
+impl_loadable!(QueuedSwap);
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SwapQueue {
+    pub head: u64,
+    pub tail: u64,
+    pub swaps: [QueuedSwap; MAX_EXECUTE_SWAPS],
+}
+impl_loadable!(SwapQueue);
+
+impl SwapQueue {
+    #[inline]
+    pub fn load_mut_checked<'a>(
+        account: &'a AccountInfo,
+        program_id: &Pubkey,
+    ) -> Result<RefMut<'a, Self>, ProgramError> {
+        if account.owner != program_id {
+            return Err(AmmError::InvalidOwner.into());
+        }
+        if account.data_len() != size_of::<Self>() {
+            return Err(AmmError::ExpectedAccount.into());
+        }
+        Self::load_mut(account)
+    }
+
+    pub fn pop(&mut self) -> Option<QueuedSwap> {
+        if self.head == self.tail {
+            return None;
+        }
+        let idx = (self.head % MAX_EXECUTE_SWAPS as u64) as usize;
+        let swap = self.swaps[idx];
+        self.head += 1;
+        Some(swap)
+    }
+}
+
 /// For simulateTransaction to get instruction data
 #[cfg_attr(feature = "client", derive(Debug))]
 #[derive(Copy, Clone)]
@@ -1018,6 +1067,7 @@ impl GetSwapBaseOutData {
 #[cfg(test)]
 mod test {
     use super::*;
+    use solana_program::keccak;
 
     #[test]
     fn test_amm_info_layout() {
@@ -1539,5 +1589,21 @@ mod test {
         }
         let unpack_free_slot_bits = unpack_data.free_slot_bits;
         assert_eq!(free_slot_bits, unpack_free_slot_bits);
+    }
+
+    #[test]
+    fn test_swap_queue_pop() {
+        let mut queue = SwapQueue::default();
+        queue.swaps[0] = QueuedSwap {
+            is_base_out: 0,
+            _padding: [0; 7],
+            amount_param_a: 1,
+            amount_param_b: 2,
+            hash: keccak::hash(&[0,1,0,0,0,0,0,0,2,0,0,0,0,0,0,0]).to_bytes(),
+        };
+        queue.tail = 1;
+        let s = queue.pop().unwrap();
+        assert_eq!(s.amount_param_a, 1);
+        assert_eq!(queue.head, 1);
     }
 }

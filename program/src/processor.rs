@@ -6,6 +6,7 @@ use crate::{
         AdminCancelOrdersInstruction, AmmInstruction, ConfigArgs, DepositInstruction,
         InitializeInstruction2, MonitorStepInstruction, SetParamsInstruction, SimulateInstruction,
         SwapInstructionBaseIn, SwapInstructionBaseOut, WithdrawInstruction, WithdrawSrmInstruction,
+        ExecuteSwapsInstruction,
     },
     invokers::Invokers,
     math::{
@@ -15,7 +16,7 @@ use crate::{
     state::{
         AmmConfig, AmmInfo, AmmParams, AmmResetFlag, AmmState, AmmStatus, GetPoolData,
         GetSwapBaseInData, GetSwapBaseOutData, Loadable, RunCrankData, SimulateParams,
-        TargetOrders, MAX_ORDER_LIMIT, TEN_THOUSAND,
+        TargetOrders, MAX_ORDER_LIMIT, TEN_THOUSAND, SwapQueue,
     },
 };
 
@@ -6017,6 +6018,45 @@ impl Processor {
         return Ok(());
     }
 
+    pub fn process_execute_swaps(
+        program_id: &Pubkey,
+        accounts: &[AccountInfo],
+        execute: ExecuteSwapsInstruction,
+    ) -> ProgramResult {
+        if accounts.is_empty() {
+            return Err(AmmError::WrongAccountsNumber.into());
+        }
+        let (queue_info, rest) = accounts.split_first().ok_or(AmmError::WrongAccountsNumber)?;
+        let mut queue = SwapQueue::load_mut_checked(queue_info, program_id)?;
+        for _ in 0..execute.count {
+            let entry = match queue.pop() {
+                Some(e) => e,
+                None => break,
+            };
+            let mut data = vec![entry.is_base_out];
+            data.extend_from_slice(&entry.amount_param_a.to_le_bytes());
+            data.extend_from_slice(&entry.amount_param_b.to_le_bytes());
+            let hash = solana_program::keccak::hash(&data);
+            if hash.to_bytes() != entry.hash {
+                return Err(AmmError::InvalidInput.into());
+            }
+            if entry.is_base_out == 0 {
+                let swap = SwapInstructionBaseIn {
+                    amount_in: entry.amount_param_a,
+                    minimum_amount_out: entry.amount_param_b,
+                };
+                Self::process_swap_base_in(program_id, rest, swap)?;
+            } else {
+                let swap = SwapInstructionBaseOut {
+                    max_amount_in: entry.amount_param_a,
+                    amount_out: entry.amount_param_b,
+                };
+                Self::process_swap_base_out(program_id, rest, swap)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Processes an [Instruction](enum.Instruction.html).
     pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], input: &[u8]) -> ProgramResult {
         let instruction = AmmInstruction::unpack(input)?;
@@ -6066,6 +6106,9 @@ impl Processor {
             }
             AmmInstruction::UpdateConfigAccount(config_args) => {
                 Self::process_update_config(program_id, accounts, config_args)
+            }
+            AmmInstruction::ExecuteSwaps(execute) => {
+                Self::process_execute_swaps(program_id, accounts, execute)
             }
         }
     }
