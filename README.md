@@ -15,6 +15,13 @@
 - **The audit process is [here](https://github.com/raydium-io/raydium-docs/tree/master/audit)**
 - **The dev document is [here](https://github.com/raydium-io/raydium-docs/tree/master/dev-resources)**
 
+### Continuum Integration
+
+This fork requires all swap transactions to follow an order list signed by the
+off-chain **Continuum Sequencer**. The sequencer uploads a hash of the ordered
+swaps which the on-chain program verifies before executing each swap. Liquidity
+provider deposit and withdraw flows remain unchanged.
+
 ## Environment Setup
 1. Install [Rust](https://www.rust-lang.org/tools/install).
 2. Install [Solana](https://docs.solana.com/cli/install-solana-cli-tools) and then run `solana-keygen new` to create a keypair at the default location.

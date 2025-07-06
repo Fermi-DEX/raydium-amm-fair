@@ -6,6 +6,7 @@ use crate::{
         AdminCancelOrdersInstruction, AmmInstruction, ConfigArgs, DepositInstruction,
         InitializeInstruction2, MonitorStepInstruction, SetParamsInstruction, SimulateInstruction,
         SwapInstructionBaseIn, SwapInstructionBaseOut, WithdrawInstruction, WithdrawSrmInstruction,
+        SubmitSequencerOrdersInstruction, SwapSequencedInstructionBaseIn, SwapSequencedInstructionBaseOut,
     },
     invokers::Invokers,
     math::{
@@ -15,7 +16,7 @@ use crate::{
     state::{
         AmmConfig, AmmInfo, AmmParams, AmmResetFlag, AmmState, AmmStatus, GetPoolData,
         GetSwapBaseInData, GetSwapBaseOutData, Loadable, RunCrankData, SimulateParams,
-        TargetOrders, MAX_ORDER_LIMIT, TEN_THOUSAND,
+        TargetOrders, SequencerOrders, MAX_ORDER_LIMIT, TEN_THOUSAND,
     },
 };
 
@@ -59,6 +60,11 @@ pub mod srm_token {
 
 pub mod msrm_token {
     solana_program::declare_id!("MSRMcoVyrFxnSgo5uXwone5SKcGhT1KEJMFEkMEWf9L");
+}
+
+/// Default Continuum sequencer id
+pub mod continuum_sequencer {
+    solana_program::declare_id!("GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ");
 }
 
 #[cfg(feature = "testnet")]
@@ -6017,6 +6023,72 @@ impl Processor {
         return Ok(());
     }
 
+    /// Processes `SubmitSequencerOrders` instruction.
+    pub fn process_submit_sequencer_orders(
+        program_id: &Pubkey,
+        accounts: &[AccountInfo],
+        submit: SubmitSequencerOrdersInstruction,
+    ) -> ProgramResult {
+        let account_info_iter = &mut accounts.iter();
+        let orders_info = next_account_info(account_info_iter)?;
+        let signer_info = next_account_info(account_info_iter)?;
+        if !signer_info.is_signer || *signer_info.key != continuum_sequencer::id() {
+            return Err(AmmError::InvalidSignAccount.into());
+        }
+        let mut orders = SequencerOrders::load_mut_checked(orders_info, program_id)?;
+        orders.orders_hash = submit.orders_hash;
+        orders.next_index = 0;
+        Ok(())
+    }
+
+    pub fn process_swap_base_in_seq(
+        program_id: &Pubkey,
+        accounts: &[AccountInfo],
+        swap: SwapSequencedInstructionBaseIn,
+    ) -> ProgramResult {
+        if accounts.len() < 1 {
+            return Err(AmmError::WrongAccountsNumber.into());
+        }
+        let (orders_account, rest) = accounts.split_first().unwrap();
+        let mut orders = SequencerOrders::load_mut_checked(orders_account, program_id)?;
+        if swap.order_index != orders.next_index {
+            return Err(AmmError::InvalidInput.into());
+        }
+        orders.next_index = orders.next_index.checked_add(1).ok_or(AmmError::InvalidInput)?;
+        Self::process_swap_base_in(
+            program_id,
+            rest,
+            SwapInstructionBaseIn {
+                amount_in: swap.amount_in,
+                minimum_amount_out: swap.minimum_amount_out,
+            },
+        )
+    }
+
+    pub fn process_swap_base_out_seq(
+        program_id: &Pubkey,
+        accounts: &[AccountInfo],
+        swap: SwapSequencedInstructionBaseOut,
+    ) -> ProgramResult {
+        if accounts.len() < 1 {
+            return Err(AmmError::WrongAccountsNumber.into());
+        }
+        let (orders_account, rest) = accounts.split_first().unwrap();
+        let mut orders = SequencerOrders::load_mut_checked(orders_account, program_id)?;
+        if swap.order_index != orders.next_index {
+            return Err(AmmError::InvalidInput.into());
+        }
+        orders.next_index = orders.next_index.checked_add(1).ok_or(AmmError::InvalidInput)?;
+        Self::process_swap_base_out(
+            program_id,
+            rest,
+            SwapInstructionBaseOut {
+                max_amount_in: swap.max_amount_in,
+                amount_out: swap.amount_out,
+            },
+        )
+    }
+
     /// Processes an [Instruction](enum.Instruction.html).
     pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], input: &[u8]) -> ProgramResult {
         let instruction = AmmInstruction::unpack(input)?;
@@ -6066,6 +6138,15 @@ impl Processor {
             }
             AmmInstruction::UpdateConfigAccount(config_args) => {
                 Self::process_update_config(program_id, accounts, config_args)
+            }
+            AmmInstruction::SubmitSequencerOrders(submit) => {
+                Self::process_submit_sequencer_orders(program_id, accounts, submit)
+            }
+            AmmInstruction::SwapBaseInSeq(seq) => {
+                Self::process_swap_base_in_seq(program_id, accounts, seq)
+            }
+            AmmInstruction::SwapBaseOutSeq(seq) => {
+                Self::process_swap_base_out_seq(program_id, accounts, seq)
             }
         }
     }

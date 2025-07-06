@@ -110,6 +110,28 @@ pub struct SwapInstructionBaseOut {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SwapSequencedInstructionBaseIn {
+    pub amount_in: u64,
+    pub minimum_amount_out: u64,
+    pub order_index: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SwapSequencedInstructionBaseOut {
+    pub max_amount_in: u64,
+    pub amount_out: u64,
+    pub order_index: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SubmitSequencerOrdersInstruction {
+    pub orders_hash: [u8; 32],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SimulateInstruction {
     pub param: u8,
     pub swap_base_in_value: Option<SwapInstructionBaseIn>,
@@ -369,6 +391,15 @@ pub enum AmmInstruction {
 
     /// Update amm config account by admin
     UpdateConfigAccount(ConfigArgs),
+
+    /// Upload sequencer ordered swap list
+    SubmitSequencerOrders(SubmitSequencerOrdersInstruction),
+
+    /// Swap with sequencer enforcement, base in
+    SwapBaseInSeq(SwapSequencedInstructionBaseIn),
+
+    /// Swap with sequencer enforcement, base out
+    SwapBaseOutSeq(SwapSequencedInstructionBaseOut),
 }
 
 impl AmmInstruction {
@@ -595,6 +626,34 @@ impl AmmInstruction {
                         return Err(ProgramError::InvalidInstructionData.into());
                     }
                 }
+            }
+            16 => {
+                let (orders_hash_bytes, _rest) = rest.split_at(32);
+                let mut orders_hash = [0u8; 32];
+                orders_hash.copy_from_slice(orders_hash_bytes);
+                Self::SubmitSequencerOrders(SubmitSequencerOrdersInstruction {
+                    orders_hash,
+                })
+            }
+            17 => {
+                let (amount_in, rest) = Self::unpack_u64(rest)?;
+                let (minimum_amount_out, rest) = Self::unpack_u64(rest)?;
+                let (order_index, _rest) = Self::unpack_u64(rest)?;
+                Self::SwapBaseInSeq(SwapSequencedInstructionBaseIn {
+                    amount_in,
+                    minimum_amount_out,
+                    order_index,
+                })
+            }
+            18 => {
+                let (max_amount_in, rest) = Self::unpack_u64(rest)?;
+                let (amount_out, rest) = Self::unpack_u64(rest)?;
+                let (order_index, _rest) = Self::unpack_u64(rest)?;
+                Self::SwapBaseOutSeq(SwapSequencedInstructionBaseOut {
+                    max_amount_in,
+                    amount_out,
+                    order_index,
+                })
             }
             _ => return Err(ProgramError::InvalidInstructionData.into()),
         })
@@ -836,6 +895,22 @@ impl AmmInstruction {
                     }
                     _ => return Err(ProgramError::InvalidInstructionData.into()),
                 }
+            }
+            Self::SubmitSequencerOrders(SubmitSequencerOrdersInstruction { orders_hash }) => {
+                buf.push(16);
+                buf.extend_from_slice(orders_hash);
+            }
+            Self::SwapBaseInSeq(SwapSequencedInstructionBaseIn { amount_in, minimum_amount_out, order_index }) => {
+                buf.push(17);
+                buf.extend_from_slice(&amount_in.to_le_bytes());
+                buf.extend_from_slice(&minimum_amount_out.to_le_bytes());
+                buf.extend_from_slice(&order_index.to_le_bytes());
+            }
+            Self::SwapBaseOutSeq(SwapSequencedInstructionBaseOut { max_amount_in, amount_out, order_index }) => {
+                buf.push(18);
+                buf.extend_from_slice(&max_amount_in.to_le_bytes());
+                buf.extend_from_slice(&amount_out.to_le_bytes());
+                buf.extend_from_slice(&order_index.to_le_bytes());
             }
         }
         Ok(buf)
