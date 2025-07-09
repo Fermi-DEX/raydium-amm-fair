@@ -26,6 +26,13 @@ declare_id!("CnwmWraP1SBJtH2PT9KvZkUGLeY8zq1uFYgH1Dqwrapp");
 pub mod continuum_wrapper {
     use super::*;
 
+    /// Initialize the global FIFO state
+    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
+        let state = &mut ctx.accounts.fifo_state;
+        state.seq = 0;
+        Ok(())
+    }
+
     /// Wrapper entry‑point. The client passes:
     /// * `seq`               – next FIFO number that *must* equal `fifo_state.seq + 1`.
     /// * `raydium_ix_data`   – the **raw** serialized Raydium `Swap` instruction data.
@@ -98,6 +105,23 @@ pub mod continuum_wrapper {
 // -----------------------------------------------------------------------------
 // Accounts & state
 // -----------------------------------------------------------------------------
+
+#[derive(Accounts)]
+pub struct Initialize<'info> {
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + 8, // discriminator + u64
+        seeds = [b"fifo_state"],
+        bump
+    )]
+    pub fifo_state: Account<'info, FifoState>,
+    
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    
+    pub system_program: Program<'info, System>,
+}
 
 #[derive(Accounts)]
 pub struct SwapWithSeq<'info> {
