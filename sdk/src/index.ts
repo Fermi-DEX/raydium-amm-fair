@@ -23,4 +23,5 @@ export {
   Commitment
 } from '@solana/web3.js';
 
-export { BN } from '@coral-xyz/anchor';
+import { BN } from '@coral-xyz/anchor';
+export { BN };

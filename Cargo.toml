@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["program"]
+members = ["program", "continuum-wrapper"]
 
 [profile.release]
 overflow-checks = true

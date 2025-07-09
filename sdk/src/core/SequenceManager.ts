@@ -1,24 +1,24 @@
 import { Connection, PublicKey } from '@solana/web3.js';
-import { Program, AnchorProvider, Idl, BN } from '@coral-xyz/anchor';
+import { Program, BN } from '@coral-xyz/anchor';
 import { FifoState } from '../types';
 
 export class SequenceManager {
   private sequenceCache: Map<string, BN> = new Map();
-  private program: Program;
+  private program: Program<any>;
   private connection: Connection;
 
-  constructor(program: Program, connection: Connection) {
+  constructor(program: Program<any>, connection: Connection) {
     this.program = program;
     this.connection = connection;
   }
 
   async getNextSequence(fifoStatePubkey: PublicKey): Promise<BN> {
     try {
-      const fifoState = await this.program.account.fifoState.fetch(fifoStatePubkey) as FifoState;
+      const fifoState = await (this.program.account as any).fifoState.fetch(fifoStatePubkey) as FifoState;
       const nextSeq = fifoState.seq.add(new BN(1));
       this.sequenceCache.set(fifoStatePubkey.toBase58(), nextSeq);
       return nextSeq;
-    } catch (error) {
+    } catch (error: any) {
       // If account doesn't exist yet, start at 1
       if (error.message?.includes('Account does not exist')) {
         return new BN(1);
@@ -29,9 +29,9 @@ export class SequenceManager {
 
   async getCurrentSequence(fifoStatePubkey: PublicKey): Promise<BN> {
     try {
-      const fifoState = await this.program.account.fifoState.fetch(fifoStatePubkey) as FifoState;
+      const fifoState = await (this.program.account as any).fifoState.fetch(fifoStatePubkey) as FifoState;
       return fifoState.seq;
-    } catch (error) {
+    } catch (error: any) {
       // If account doesn't exist yet, return 0
       if (error.message?.includes('Account does not exist')) {
         return new BN(0);

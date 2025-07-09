@@ -11,7 +11,7 @@ import {
   Wallet,
   setProvider
 } from '@coral-xyz/anchor';
-import { BN } from 'bn.js';
+import BN from 'bn.js';
 
 import { SequenceManager } from './core/SequenceManager';
 import { ContinuumTransactionBuilder } from './core/TransactionBuilder';
@@ -22,7 +22,7 @@ import IDL from './idl/continuum_wrapper.json';
 
 export class ContinuumSDK {
   private connection: Connection;
-  private program: Program;
+  private program: Program<any>;
   private sequenceManager: SequenceManager;
   private transactionBuilder: ContinuumTransactionBuilder;
   private transactionSubmitter: ContinuumTransactionSubmitter;
@@ -52,7 +52,7 @@ export class ContinuumSDK {
     };
 
     // Initialize program
-    this.program = new Program(IDL as any, this.config.wrapperProgramId, provider);
+    this.program = new Program(IDL as any, provider);
 
     // Initialize core components
     this.sequenceManager = new SequenceManager(this.program, connection);
@@ -174,7 +174,7 @@ export class ContinuumSDK {
   /**
    * Get program instance for advanced usage
    */
-  getProgram(): Program {
+  getProgram(): Program<any> {
     return this.program;
   }
 

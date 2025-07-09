@@ -16,11 +16,11 @@ import { SequenceManager } from './SequenceManager';
 import { accountMeta } from '../utils/helpers';
 
 export class ContinuumTransactionBuilder {
-  private program: Program;
+  private program: Program<any>;
   private sequenceManager: SequenceManager;
   private config: ContinuumConfig;
 
-  constructor(program: Program, sequenceManager: SequenceManager, config: ContinuumConfig) {
+  constructor(program: Program<any>, sequenceManager: SequenceManager, config: ContinuumConfig) {
     this.program = program;
     this.sequenceManager = sequenceManager;
     this.config = config;
@@ -166,18 +166,18 @@ export class ContinuumTransactionBuilder {
 
     // Check if already initialized
     try {
-      await this.program.account.fifoState.fetch(fifoState);
+      await (this.program.account as any).fifoState.fetch(fifoState);
       console.log("FifoState already initialized");
       return tx; // Return empty transaction
     } catch (e) {
       // Account doesn't exist, proceed with initialization
     }
 
-    const initIx = await this.program.methods
+    const initIx = await (this.program.methods as any)
       .initialize()
       .accounts({
         fifoState,
-        payer: this.program.provider.wallet.publicKey,
+        payer: (this.program.provider as any).wallet.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .instruction();
