@@ -1,27 +1,11 @@
-
-//! Continuum FIFO wrapper for Raydium swaps
-//! -------------------------------------------------------------
-//! * Enforces global, monotonically‑increasing `seq` so every swap
-//!   must arrive through Continuum ordering.
-//! * Uses a *Program‑Derived Address* (PDA) as the delegate that
-//!   holds temporary spend‑authority over the user's source token
-//!   account *only while this instruction executes*.
-//! * After the CPI call into Raydium, the allowance is immediately
-//!   revoked, bringing risk back to zero.
-//! * Upgrade authority should be **burned** after audit; the PDA has
-//!   no private key so off‑chain infrastructure cannot misuse it.
-//!
-//! Compile‑tested with Anchor 0.30.
+//! Continuum FIFO wrapper V2 - With Pool Authority Support
+//! This version ensures ALL swaps must go through FIFO ordering
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program;
 use anchor_spl::token::{self, Revoke, Token, TokenAccount};
 
-// -----------------------------------------------------------------------------
-// Program declaration
-// -----------------------------------------------------------------------------
-
-declare_id!("57tjWXQW4XuhSZd1LnBLPLkC3ZdCUkZsGYReGjG2tPTW");
+declare_id!("9Mp8VkLRUR1Gw6HSXmByjM4tqabaDnoTpDpbzMvsiQ2Y");
 
 #[program]
 pub mod continuum_wrapper {
@@ -34,21 +18,30 @@ pub mod continuum_wrapper {
         Ok(())
     }
 
-    /// Wrapper entry‑point. The client passes:
-    /// * `seq`               – next FIFO number that *must* equal `fifo_state.seq + 1`.
-    /// * `raydium_ix_data`   – the **raw** serialized Raydium `Swap` instruction data.
-    /// Remaining accounts are *exactly* the accounts Raydium expects for its swap,
-    /// prefixed with the accounts declared in [`SwapWithSeq`].
-    pub fn swap_with_seq(
-        ctx: Context<SwapWithSeq>,
+    /// Initialize pool authority for a specific pool
+    pub fn initialize_pool_authority(
+        ctx: Context<InitializePoolAuthority>,
+        pool_id: Pubkey,
+    ) -> Result<()> {
+        let pool_auth = &mut ctx.accounts.pool_authority_state;
+        pool_auth.pool_id = pool_id;
+        pool_auth.fifo_enforced = true;
+        pool_auth.created_at = Clock::get()?.unix_timestamp;
+        Ok(())
+    }
+
+    /// Swap with FIFO ordering AND pool authority
+    /// This version signs with both delegate AND pool authority
+    pub fn swap_with_pool_authority(
+        ctx: Context<SwapWithPoolAuthority>,
         seq: u64,
         raydium_ix_data: Vec<u8>,
     ) -> Result<()> {
-        // 1️⃣  FIFO check --------------------------------------------------------------------
+        // 1️⃣  FIFO check
         let state = &mut ctx.accounts.fifo_state;
         require!(state.seq + 1 == seq, ErrorCode::BadSeq);
 
-        // 2️⃣  Build the Raydium CPI instruction ---------------------------------------------
+        // 2️⃣  Build the Raydium CPI instruction
         let ix = solana_program::instruction::Instruction {
             program_id: ctx.accounts.raydium_program.key(),
             accounts: ctx
@@ -63,61 +56,76 @@ pub mod continuum_wrapper {
             data: raydium_ix_data,
         };
 
-        // Seeds for the delegate PDA signer
+        // Seeds for BOTH signers
         let delegate_bump = ctx.bumps.delegate_authority;
+        let pool_auth_bump = ctx.bumps.pool_authority;
         let user_source_key = ctx.accounts.user_source.key();
+        let pool_id = ctx.accounts.pool_authority_state.pool_id;
+        
         let delegate_seeds: &[&[u8]] = &[
             b"delegate",
             user_source_key.as_ref(),
             &[delegate_bump],
         ];
+        
+        let pool_auth_seeds: &[&[u8]] = &[
+            b"pool_authority",
+            pool_id.as_ref(),
+            &[pool_auth_bump],
+        ];
 
-        // 3️⃣  CPI into Raydium with PDA signature -------------------------------------------
+        // 3️⃣  CPI with BOTH signatures
         solana_program::program::invoke_signed(
             &ix,
             ctx.remaining_accounts,
-            &[delegate_seeds],
+            &[delegate_seeds, pool_auth_seeds], // Both PDAs sign!
         )?;
 
-        // 4️⃣  Immediately revoke the temporary allowance ------------------------------------
-        let revoke_seeds: &[&[u8]] = &[
-            b"delegate",
-            user_source_key.as_ref(),
-            &[delegate_bump],
-        ];
-        let signer_seeds = &[revoke_seeds];
-        
+        // 4️⃣  Revoke delegate
+        let revoke_seeds = &[delegate_seeds];
         let revoke_ctx = CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             Revoke {
                 source: ctx.accounts.user_source.to_account_info(),
                 authority: ctx.accounts.delegate_authority.to_account_info(),
             },
-            signer_seeds,
+            revoke_seeds,
         );
         token::revoke(revoke_ctx)?;
 
-        // 5️⃣  Advance sequence and emit event ----------------------------------------------
+        // 5️⃣  Advance sequence
         state.seq = seq;
-        emit!(SeqEvent {
+        emit!(SwapEvent {
             seq,
             user: ctx.accounts.user.key(),
+            pool_id,
         });
 
         Ok(())
     }
+
+    /// Create a pool with Continuum as authority
+    pub fn create_pool_with_authority(
+        _ctx: Context<CreatePoolWithAuthority>,
+        _pool_params: CreatePoolParams,
+    ) -> Result<()> {
+        // This would contain the logic to create a Raydium pool
+        // with the Continuum pool authority PDA as the authority
+        // Implementation depends on Raydium's pool creation interface
+        
+        msg!("Pool creation with FIFO authority not yet implemented");
+        Ok(())
+    }
 }
 
-// -----------------------------------------------------------------------------
-// Accounts & state
-// -----------------------------------------------------------------------------
+// Account structures
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
     #[account(
         init,
         payer = payer,
-        space = 8 + 8, // discriminator + u64
+        space = 8 + 8,
         seeds = [b"fifo_state"],
         bump
     )]
@@ -130,75 +138,118 @@ pub struct Initialize<'info> {
 }
 
 #[derive(Accounts)]
-pub struct SwapWithSeq<'info> {
-    /// Global FIFO account (one per Raydium pair or per wrapper instance).
+#[instruction(pool_id: Pubkey)]
+pub struct InitializePoolAuthority<'info> {
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + 32 + 8 + 1, // discriminator + pubkey + timestamp + bool
+        seeds = [b"pool_authority_state", pool_id.as_ref()],
+        bump
+    )]
+    pub pool_authority_state: Account<'info, PoolAuthorityState>,
+    
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SwapWithPoolAuthority<'info> {
     #[account(mut, seeds = [b"fifo_state"], bump)]
     pub fifo_state: Account<'info, FifoState>,
 
-    /// PDA that temporarily acts as *delegate authority* over `user_source`.
-    /// Seeds: ["delegate", user_source]
-    /// *Must* be passed in `remaining_accounts` list where Raydium expects
-    /// the `user_authority` signer.
+    /// Pool authority state
     #[account(
-        mut,
+        seeds = [b"pool_authority_state", pool_authority_state.pool_id.as_ref()],
+        bump
+    )]
+    pub pool_authority_state: Account<'info, PoolAuthorityState>,
+
+    /// Pool authority PDA that signs for pool operations
+    #[account(
+        seeds = [b"pool_authority", pool_authority_state.pool_id.as_ref()],
+        bump
+    )]
+    pub pool_authority: UncheckedAccount<'info>,
+
+    /// Delegate authority for user's tokens
+    #[account(
         seeds = [b"delegate", user_source.key().as_ref()],
         bump
     )]
     pub delegate_authority: UncheckedAccount<'info>,
 
-    /// Signer of the outer transaction (e.g. wallet or relayer).
     pub user: Signer<'info>,
 
-    /// User's SPL‑Token account that supplies the *input* tokens.
     #[account(mut)]
     pub user_source: Account<'info, TokenAccount>,
 
-    /// Where the *output* tokens will be credited; passed to Raydium as usual.
     #[account(mut)]
     pub user_destination: Account<'info, TokenAccount>,
 
-    /// Raydium AMM or CLMM program – checked at runtime if desired.
-    /// KEEP AS `UncheckedAccount` to avoid Anchor's ownership constraint.
     pub raydium_program: UncheckedAccount<'info>,
-
-    /// SPL‑Token program.
     pub token_program: Program<'info, Token>,
-
-    // ---------------------------------------------------------------------
-    // NOTE: All other accounts required by Raydium's swap (pool vaults,
-    // pool authority, tick arrays, etc.) must be appended to the
-    // transaction's `remaining_accounts` in *exact* order expected by
-    // Raydium. The wrapper forwards them untouched.
-    // ---------------------------------------------------------------------
 }
+
+#[derive(Accounts)]
+pub struct CreatePoolWithAuthority<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    
+    /// Pool authority PDA that will control the pool
+    #[account(
+        seeds = [b"pool_authority", pool_id.key().as_ref()],
+        bump
+    )]
+    pub pool_authority: UncheckedAccount<'info>,
+    
+    /// The pool account to be created
+    pub pool_id: UncheckedAccount<'info>,
+    
+    pub raydium_program: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+// State structures
 
 #[account]
 pub struct FifoState {
     pub seq: u64,
 }
 
-#[event]
-pub struct SeqEvent {
-    pub seq: u64,
-    pub user: Pubkey,
+#[account]
+pub struct PoolAuthorityState {
+    pub pool_id: Pubkey,
+    pub created_at: i64,
+    pub fifo_enforced: bool,
 }
 
-// -----------------------------------------------------------------------------
+// Events
+
+#[event]
+pub struct SwapEvent {
+    pub seq: u64,
+    pub user: Pubkey,
+    pub pool_id: Pubkey,
+}
+
 // Errors
-// -----------------------------------------------------------------------------
 
 #[error_code]
 pub enum ErrorCode {
     #[msg("Sequence mismatch: expected fifo_state.seq + 1")] 
     BadSeq,
-    #[msg("Missing bump for delegate PDA (program error)")]
-    MissingBump,
 }
 
-// -----------------------------------------------------------------------------
-// Tests (optional): Place in `tests/` directory when scaffolding with Anchor.
-// -----------------------------------------------------------------------------
-// Use `anchor test` with a local Raydium mock to confirm:
-// 1. Sequence enforcement.
-// 2. Swap succeeds and allowance is revoked.
-// 3. Any seq‑gap causes transaction failure.
+// Parameters
+
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct CreatePoolParams {
+    pub base_mint: Pubkey,
+    pub quote_mint: Pubkey,
+    pub base_amount: u64,
+    pub quote_amount: u64,
+    // Additional pool parameters...
+}

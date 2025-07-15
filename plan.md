@@ -8,6 +8,7 @@ The Continuum wrapper enforces FIFO (First-In-First-Out) ordering for Raydium sw
 - Temporary delegation of token spending authority to a PDA
 - Immediate revocation of delegation after swap
 - Exact account ordering for Raydium CPI
+- Wrapper’s swap CPI must be invoked with **both** the *delegate PDA* **and** the pool‑authority PDA in the `signer_seeds` array; otherwise Raydium vault transfers will fail.
 
 ## Client-Side Architecture Components
 
@@ -20,8 +21,12 @@ class SequenceManager {
   private sequenceCache: Map<string, bigint> = new Map();
   
   async getNextSequence(fifoStatePubkey: PublicKey): Promise<bigint> {
-    // Fetch current sequence from on-chain FifoState account
+    // optimistic cache first
+    const cached = this.sequenceCache.get(fifoStatePubkey.toBase58());
+    if (cached !== undefined) return cached + 1n;
+
     const fifoState = await program.account.fifoState.fetch(fifoStatePubkey);
+    this.sequenceCache.set(fifoStatePubkey.toBase58(), BigInt(fifoState.seq));
     return BigInt(fifoState.seq) + 1n;
   }
   
@@ -30,7 +35,7 @@ class SequenceManager {
     while (true) {
       const currentSeq = await this.getCurrentSequence(fifoStatePubkey);
       if (currentSeq >= targetSeq - 1n) break;
-      await sleep(100); // 100ms polling interval
+      await sleep(250); // 4 polls/second is plenty
     }
   }
 }
@@ -49,20 +54,20 @@ class ContinuumTransactionBuilder {
   async buildSwapTransaction(params: SwapParams): Promise<Transaction> {
     const tx = new Transaction();
     
-    // Step 1: Approve delegation to PDA
+    // NOTE: Use `createApproveCheckedInstruction` so we pass the token's `decimals`.
     const [delegateAuthority] = PublicKey.findProgramAddressSync(
       [Buffer.from("delegate"), params.userSource.toBuffer()],
       WRAPPER_PROGRAM_ID
     );
     
     tx.add(
-      Token.createApproveInstruction(
-        TOKEN_PROGRAM_ID,
+      createApproveCheckedInstruction(
         params.userSource,
+        params.mint,
         delegateAuthority,
         params.user,
-        [],
-        params.amountIn
+        params.amountIn,
+        params.decimals      // NEW
       )
     );
     
@@ -74,6 +79,10 @@ class ContinuumTransactionBuilder {
   }
   
   private async buildWrapperInstruction(params: SwapParams): Promise<TransactionInstruction> {
+    const [delegateAuthority] = PublicKey.findProgramAddressSync(
+      [Buffer.from("delegate"), params.userSource.toBuffer()],
+      WRAPPER_PROGRAM_ID
+    );
     // Serialize Raydium swap instruction data
     const raydiumIxData = this.serializeRaydiumSwapData(params);
     
@@ -90,6 +99,7 @@ class ContinuumTransactionBuilder {
       { pubkey: params.userDestination, isSigner: false, isWritable: true },
       { pubkey: RAYDIUM_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: delegateAuthority, isSigner: false, isWritable: false },
       
       // Raydium accounts (in exact order)
       ...this.getRaydiumAccounts(params)
@@ -113,9 +123,7 @@ class ContinuumTransactionBuilder {
 ```typescript
 class ContinuumTransactionSubmitter {
   async submitTransaction(tx: Transaction, signer: Keypair): Promise<string> {
-    let retries = 3;
-    
-    while (retries > 0) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         // Get latest blockhash
         const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
@@ -142,7 +150,7 @@ class ContinuumTransactionSubmitter {
           // Sequence mismatch - rebuild transaction with fresh sequence
           console.log("Sequence mismatch, rebuilding transaction...");
           tx = await this.rebuildWithFreshSequence(tx);
-          retries--;
+          continue;
         } else {
           throw error;
         }
@@ -177,6 +185,8 @@ class MEVProtection {
   }
 }
 ```
+
+> **Partial-signing caveat**: the relay must *never* strip the wallet’s original signature.  It should append its own wrapper‑PDA signature via `partialSign`, leaving the fee‑payer unchanged so gas costs remain on the user.
 
 ### 5. Integration Example
 **Complete flow for a protected swap**:
