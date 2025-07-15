@@ -35,6 +35,10 @@ pub struct InitializeInstruction2 {
     pub init_pc_amount: u64,
     /// init token coin amount
     pub init_coin_amount: u64,
+    /// authority type: 0 = Default PDA, 1 = Custom
+    pub authority_type: u8,
+    /// custom authority (only used if authority_type == 1)
+    pub custom_authority: Pubkey,
 }
 
 #[repr(C)]
@@ -387,12 +391,28 @@ impl AmmInstruction {
                 let (nonce, rest) = Self::unpack_u8(rest)?;
                 let (open_time, rest) = Self::unpack_u64(rest)?;
                 let (init_pc_amount, rest) = Self::unpack_u64(rest)?;
-                let (init_coin_amount, _reset) = Self::unpack_u64(rest)?;
+                let (init_coin_amount, rest) = Self::unpack_u64(rest)?;
+                // Check if we have the new fields (for backward compatibility)
+                let (authority_type, custom_authority) = if rest.len() >= 33 {
+                    let (authority_type, rest) = Self::unpack_u8(rest)?;
+                    let custom_authority = if rest.len() >= 32 {
+                        let authority_bytes = array_ref![rest, 0, 32];
+                        Pubkey::new_from_array(*authority_bytes)
+                    } else {
+                        Pubkey::default()
+                    };
+                    (authority_type, custom_authority)
+                } else {
+                    // Default values for backward compatibility
+                    (0, Pubkey::default())
+                };
                 Self::Initialize2(InitializeInstruction2 {
                     nonce,
                     open_time,
                     init_pc_amount,
                     init_coin_amount,
+                    authority_type,
+                    custom_authority,
                 })
             }
             2 => {
@@ -656,12 +676,16 @@ impl AmmInstruction {
                 open_time,
                 init_pc_amount,
                 init_coin_amount,
+                authority_type,
+                custom_authority,
             }) => {
                 buf.push(1);
                 buf.push(*nonce);
                 buf.extend_from_slice(&open_time.to_le_bytes());
                 buf.extend_from_slice(&init_pc_amount.to_le_bytes());
                 buf.extend_from_slice(&init_coin_amount.to_le_bytes());
+                buf.push(*authority_type);
+                buf.extend_from_slice(&custom_authority.to_bytes());
             }
             Self::MonitorStep(MonitorStepInstruction {
                 plan_order_limit,
@@ -872,6 +896,8 @@ pub fn initialize2(
         open_time,
         init_pc_amount,
         init_coin_amount,
+        authority_type: 0,  // Default to PDA authority
+        custom_authority: Pubkey::default(),
     });
     let data = init_data.pack()?;
 

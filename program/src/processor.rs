@@ -463,6 +463,20 @@ impl Processor {
         Pubkey::create_program_address(&[amm_seed, &[nonce]], program_id)
             .map_err(|_| AmmError::InvalidProgramAddress.into())
     }
+    
+    /// Gets the actual authority for the pool based on authority type
+    pub fn get_pool_authority(
+        program_id: &Pubkey,
+        amm: &AmmInfo,
+    ) -> Result<Pubkey, AmmError> {
+        if amm.authority_type == 1 {
+            // Custom authority
+            Ok(amm.custom_authority)
+        } else {
+            // Default PDA authority
+            Self::authority_id(program_id, AUTHORITY_AMM, amm.nonce as u8)
+        }
+    }
 
     #[allow(clippy::too_many_arguments)]
     fn check_accounts(
@@ -484,9 +498,7 @@ impl Processor {
         if amm.status == AmmStatus::Uninitialized.into_u64() {
             return Err(AmmError::InvalidStatus.into());
         }
-        if *amm_authority_info.key
-            != Self::authority_id(program_id, AUTHORITY_AMM, amm.nonce as u8)?
-        {
+        if *amm_authority_info.key != Self::get_pool_authority(program_id, amm)? {
             return Err(AmmError::InvalidProgramAddress.into());
         }
         check_assert_eq!(
@@ -895,10 +907,19 @@ impl Processor {
             "sys_program",
             AmmError::InvalidSysProgramAddress
         );
-        let (expect_amm_authority, expect_nonce) =
-            Pubkey::find_program_address(&[&AUTHORITY_AMM], program_id);
-        if *amm_authority_info.key != expect_amm_authority || init.nonce != expect_nonce {
-            return Err(AmmError::InvalidProgramAddress.into());
+        // Check authority based on authority type
+        if init.authority_type == 1 {
+            // Custom authority - verify it matches what was provided
+            if *amm_authority_info.key != init.custom_authority {
+                return Err(AmmError::InvalidProgramAddress.into());
+            }
+        } else {
+            // Default PDA authority
+            let (expect_amm_authority, expect_nonce) =
+                Pubkey::find_program_address(&[&AUTHORITY_AMM], program_id);
+            if *amm_authority_info.key != expect_amm_authority || init.nonce != expect_nonce {
+                return Err(AmmError::InvalidProgramAddress.into());
+            }
         }
         if *create_fee_destination_info.key != config_feature::create_pool_fee_address::id() {
             return Err(AmmError::InvalidFee.into());
@@ -1172,6 +1193,15 @@ impl Processor {
             market_state.coin_lot_size,
             market_state.pc_lot_size,
         )?;
+        
+        // Set custom authority if specified
+        if init.authority_type == 1 {
+            amm.authority_type = 1;
+            amm.custom_authority = init.custom_authority;
+        } else {
+            amm.authority_type = 0;
+            amm.custom_authority = Pubkey::default();
+        }
         encode_ray_log(InitLog {
             log_type: LogType::Init.into_u8(),
             time: init.open_time,
@@ -1275,9 +1305,7 @@ impl Processor {
         if !AmmStatus::from_u64(amm.status).deposit_permission() {
             return Err(AmmError::InvalidStatus.into());
         }
-        if *amm_authority_info.key
-            != Self::authority_id(program_id, AUTHORITY_AMM, amm.nonce as u8)?
-        {
+        if *amm_authority_info.key != Self::get_pool_authority(program_id, &amm)? {
             return Err(AmmError::InvalidProgramAddress.into());
         }
         let enable_orderbook;
@@ -1633,9 +1661,7 @@ impl Processor {
         }
 
         let mut amm = AmmInfo::load_mut_checked(&amm_info, program_id)?;
-        if *amm_authority_info.key
-            != Self::authority_id(program_id, AUTHORITY_AMM, amm.nonce as u8)?
-        {
+        if *amm_authority_info.key != Self::get_pool_authority(program_id, &amm)? {
             return Err(AmmError::InvalidProgramAddress.into());
         }
         if amm_info.owner != program_id {
@@ -1921,9 +1947,7 @@ impl Processor {
         if !AmmStatus::from_u64(amm.status).withdraw_permission() {
             return Err(AmmError::InvalidStatus.into());
         }
-        if *amm_authority_info.key
-            != Self::authority_id(program_id, AUTHORITY_AMM, amm.nonce as u8)?
-        {
+        if *amm_authority_info.key != Self::get_pool_authority(program_id, &amm)? {
             return Err(AmmError::InvalidProgramAddress.into());
         }
         let enable_orderbook;
@@ -2259,9 +2283,7 @@ impl Processor {
             AmmError::InvalidSplTokenProgram
         );
         let spl_token_program_id = token_program_info.key;
-        if *amm_authority_info.key
-            != Self::authority_id(program_id, AUTHORITY_AMM, amm.nonce as u8)?
-        {
+        if *amm_authority_info.key != Self::get_pool_authority(program_id, &amm)? {
             return Err(AmmError::InvalidProgramAddress.into());
         }
         check_assert_eq!(
@@ -2671,7 +2693,7 @@ impl Processor {
             AmmError::InvalidSplTokenProgram
         );
         let spl_token_program_id = token_program_info.key;
-        let authority = Self::authority_id(program_id, AUTHORITY_AMM, amm.nonce as u8)?;
+        let authority = Self::get_pool_authority(program_id, &amm)?;
         check_assert_eq!(
             *amm_authority_info.key,
             authority,
@@ -3064,7 +3086,7 @@ impl Processor {
         if !admin_info.is_signer || *admin_info.key != config_feature::amm_owner::ID {
             return Err(AmmError::InvalidSignAccount.into());
         }
-        let authority = Self::authority_id(program_id, AUTHORITY_AMM, amm.nonce as u8)?;
+        let authority = Self::get_pool_authority(program_id, &amm)?;
         check_assert_eq!(
             *amm_authority_info.key,
             authority,
@@ -3328,7 +3350,7 @@ impl Processor {
             AmmError::InvalidSplTokenProgram
         );
         let spl_token_program_id = token_program_info.key;
-        let authority = Self::authority_id(program_id, AUTHORITY_AMM, amm.nonce as u8)?;
+        let authority = Self::get_pool_authority(program_id, &amm)?;
         check_assert_eq!(
             *amm_authority_info.key,
             authority,
@@ -3387,7 +3409,7 @@ impl Processor {
         let market_event_queue_info = next_account_info(account_info_iter)?;
 
         let amm = AmmInfo::load_checked(&amm_info, program_id)?;
-        let authority = Self::authority_id(program_id, AUTHORITY_AMM, amm.nonce as u8)?;
+        let authority = Self::get_pool_authority(program_id, &amm)?;
         Self::check_account_readonly(amm_info)?;
         Self::check_account_readonly(amm_open_orders_info)?;
         Self::check_account_readonly(amm_coin_vault_info)?;
@@ -3549,7 +3571,7 @@ impl Processor {
                 msg!("simulate_swap_base_in: status {}", identity(amm.status));
                 return Err(AmmError::InvalidStatus.into());
             }
-            let authority = Self::authority_id(program_id, AUTHORITY_AMM, amm.nonce as u8)?;
+            let authority = Self::get_pool_authority(program_id, &amm)?;
             check_assert_eq!(
                 *amm_authority_info.key,
                 authority,
@@ -3771,7 +3793,7 @@ impl Processor {
                 msg!("simulate_swap_base_out: status {}", identity(amm.status));
                 return Err(AmmError::InvalidStatus.into());
             }
-            let authority = Self::authority_id(program_id, AUTHORITY_AMM, amm.nonce as u8)?;
+            let authority = Self::get_pool_authority(program_id, &amm)?;
             check_assert_eq!(
                 *amm_authority_info.key,
                 authority,
@@ -5169,9 +5191,7 @@ impl Processor {
             return Err(AmmError::InvalidSplTokenProgram.into());
         }
         let mut amm = AmmInfo::load_mut_checked(&amm_info, program_id)?;
-        if *amm_authority_info.key
-            != Self::authority_id(program_id, AUTHORITY_AMM, amm.nonce as u8)?
-        {
+        if *amm_authority_info.key != Self::get_pool_authority(program_id, &amm)? {
             return Err(AmmError::InvalidProgramAddress.into());
         }
         if amm_info.owner != program_id {
@@ -5808,9 +5828,7 @@ impl Processor {
             return Err(AmmError::InvalidSplTokenProgram.into());
         }
         let amm = AmmInfo::load_checked(&amm_info, program_id)?;
-        if *amm_authority_info.key
-            != Self::authority_id(program_id, AUTHORITY_AMM, amm.nonce as u8)?
-        {
+        if *amm_authority_info.key != Self::get_pool_authority(program_id, &amm)? {
             return Err(AmmError::InvalidProgramAddress.into());
         }
         if amm_info.owner != program_id {

@@ -222,6 +222,31 @@ impl TargetOrders {
 }
 
 #[repr(u64)]
+pub enum AuthorityType {
+    /// Use default PDA authority
+    DefaultPDA = 0u64,
+    /// Use custom authority
+    Custom = 1u64,
+}
+
+impl AuthorityType {
+    pub fn from_u64(authority_type: u64) -> Self {
+        match authority_type {
+            0u64 => AuthorityType::DefaultPDA,
+            1u64 => AuthorityType::Custom,
+            _ => AuthorityType::DefaultPDA, // Default fallback
+        }
+    }
+
+    pub fn into_u64(&self) -> u64 {
+        match self {
+            AuthorityType::DefaultPDA => 0u64,
+            AuthorityType::Custom => 1u64,
+        }
+    }
+}
+
+#[repr(u64)]
 pub enum AmmStatus {
     Uninitialized = 0u64,
     Initialized = 1u64,
@@ -696,7 +721,11 @@ pub struct AmmInfo {
     /// target_orders key
     pub target_orders: Pubkey,
     /// padding
-    pub padding1: [u64; 8],
+    pub padding1: [u64; 6],
+    /// authority type: 0 = Default PDA, 1 = Custom
+    pub authority_type: u64,
+    /// custom authority (if authority_type == 1)
+    pub custom_authority: Pubkey,
     /// amm owner key
     pub amm_owner: Pubkey,
     /// pool lp amount
@@ -839,6 +868,8 @@ impl AmmInfo {
         self.max_price_multiplier = 1000000000;
         self.client_order_id = 0;
         self.padding1 = Zeroable::zeroed();
+        self.authority_type = 0; // Default to PDA authority
+        self.custom_authority = Pubkey::default();
         self.recent_epoch = get_recent_epoch().unwrap();
         self.padding2 = Zeroable::zeroed();
 
@@ -851,6 +882,20 @@ impl AmmInfo {
             self.client_order_id += 1;
         }
         self.client_order_id
+    }
+
+    /// Get the pool authority based on authority_type
+    pub fn get_pool_authority(&self, program_id: &Pubkey) -> Pubkey {
+        if self.authority_type == 1 && self.custom_authority != Pubkey::default() {
+            // Use custom authority
+            self.custom_authority
+        } else {
+            // Use default PDA
+            Pubkey::find_program_address(
+                &[&b"amm authority"[..]],
+                program_id,
+            ).0
+        }
     }
 }
 
@@ -1071,14 +1116,16 @@ mod test {
         let market_program = Pubkey::new_unique();
         let target_orders = Pubkey::new_unique();
 
-        let mut padding1: [u64; 8] = [0u64; 8];
-        let mut padding1_data = [0u8; 8 * 8];
+        let mut padding1: [u64; 6] = [0u64; 6];
+        let mut padding1_data = [0u8; 6 * 8];
         let mut offset = 0;
-        for i in 0..8 {
+        for i in 0..6 {
             padding1[i] = u64::MAX - i as u64;
             padding1_data[offset..offset + 8].copy_from_slice(&padding1[i].to_le_bytes());
             offset += 8;
         }
+        let authority_type: u64 = 0; // Default PDA
+        let custom_authority = Pubkey::default();
         let amm_owner = Pubkey::new_unique();
         let lp_amount: u64 = 0x123456e789abcdf0;
         let client_order_id: u64 = 0x12345e6789abcdf0;
@@ -1185,8 +1232,12 @@ mod test {
         offset += 32;
         pool_data[offset..offset + 32].copy_from_slice(&target_orders.to_bytes());
         offset += 32;
-        pool_data[offset..offset + 8 * 8].copy_from_slice(&padding1_data);
-        offset += 8 * 8;
+        pool_data[offset..offset + 6 * 8].copy_from_slice(&padding1_data);
+        offset += 6 * 8;
+        pool_data[offset..offset + 8].copy_from_slice(&authority_type.to_le_bytes());
+        offset += 8;
+        pool_data[offset..offset + 32].copy_from_slice(&custom_authority.to_bytes());
+        offset += 32;
         pool_data[offset..offset + 32].copy_from_slice(&amm_owner.to_bytes());
         offset += 32;
         pool_data[offset..offset + 8].copy_from_slice(&lp_amount.to_le_bytes());
@@ -1300,10 +1351,14 @@ mod test {
         assert_eq!(market_program, unpack_market_program);
         let unpack_target_orders = unpack_data.target_orders;
         assert_eq!(target_orders, unpack_target_orders);
-        for i in 0..8 {
+        for i in 0..6 {
             let unpack_padding1 = unpack_data.padding1[i];
             assert_eq!(padding1[i], unpack_padding1);
         }
+        let unpack_authority_type = unpack_data.authority_type;
+        assert_eq!(authority_type, unpack_authority_type);
+        let unpack_custom_authority = unpack_data.custom_authority;
+        assert_eq!(custom_authority, unpack_custom_authority);
         let unpack_amm_owner = unpack_data.amm_owner;
         assert_eq!(amm_owner, unpack_amm_owner);
         let unpack_lp_amount = unpack_data.lp_amount;
