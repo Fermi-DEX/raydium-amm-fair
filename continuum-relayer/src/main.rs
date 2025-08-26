@@ -175,7 +175,7 @@ async fn swap_handler(
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     
     // Execute swap
-    match state.swap_executor.execute_swap(request).await {
+    match state.swap_executor.execute_swap(request, None).await {
         Ok(response) => Ok(Json(response)),
         Err(e) => {
             error!("Swap execution failed: {:?}", e);
@@ -205,18 +205,32 @@ async fn sequence_monitor_task(state: RelayerState) {
 
 async fn process_pending_swaps(state: &RelayerState) -> Result<()> {
     let mut tracker = state.sequence_tracker.write().await;
-    
+
     // Get on-chain sequence
     let fifo_state_pubkey = get_fifo_state_pubkey();
     let account_data = state.rpc_client.get_account(&fifo_state_pubkey)?;
-    
+
     if account_data.data.len() >= 16 {
         let current_seq = u64::from_le_bytes(
             account_data.data[8..16].try_into().unwrap()
         );
         tracker.update_on_chain_sequence(current_seq)?;
     }
-    
+
+    // Retrieve swaps that are ready to be processed
+    let ready = tracker.get_ready_swaps();
+    drop(tracker);
+
+    for (seq, request) in ready.into_iter() {
+        if let Err(e) = state
+            .swap_executor
+            .execute_swap(request, Some(seq))
+            .await
+        {
+            warn!("Failed to send swap sequence {}: {:?}", seq, e);
+        }
+    }
+
     Ok(())
 }
 
